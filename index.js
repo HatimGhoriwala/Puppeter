@@ -11,7 +11,7 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'running', 
     service: 'Epicor Token Extractor',
-    version: '1.0.0'
+    version: '2.0.0'
   });
 });
 
@@ -59,56 +59,122 @@ app.post('/get-token', async (req, res) => {
       if (headers['authorization'] && headers['authorization'].startsWith('Bearer ')) {
         if (!capturedToken) {
           capturedToken = headers['authorization'].replace('Bearer ', '');
-          console.log('✅ Token captured from network');
+          console.log('✅ Token captured from network request');
         }
       }
       request.continue();
     });
     
-    console.log('📍 Navigating to:', url);
+    console.log('📍 Step 1: Navigating to Epicor...');
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
     
-    console.log('⏳ Waiting for login form...');
-    await page.waitForSelector('input[type="email"], input[name="Input.Email"]', { timeout: 30000 });
+    // STEP 1: Click the "Log in" button on the first page
+    console.log('🔘 Step 2: Clicking initial Log in button...');
+    try {
+      await page.waitForSelector('button:has-text("Log in"), button[type="submit"]', { timeout: 10000 });
+      await page.click('button:has-text("Log in"), button[type="submit"]');
+      console.log('✅ Clicked Log in button, waiting for redirect...');
+      
+      // Wait for navigation to Identity Provider
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
+    } catch (e) {
+      console.log('⚠️ No initial login button found, might already be on IdP page');
+    }
     
-    console.log('✍️ Entering credentials...');
-    await page.type('input[type="email"], input[name="Input.Email"]', username, { delay: 50 });
-    await page.type('input[type="password"], input[name="Input.Password"]', password, { delay: 50 });
+    // STEP 2: Now we should be on the Identity Provider page
+    console.log('📍 Step 3: Waiting for Identity Provider login form...');
     
-    console.log('🔘 Submitting login...');
-    await page.click('button[type="submit"]');
+    // Wait for email input field (on login.epicor.com)
+    await page.waitForSelector('input[type="email"], input[placeholder*="mail"], input#Input_Email', { 
+      timeout: 30000 
+    });
     
-    console.log('⏳ Waiting for authentication...');
-    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 90000 });
-    await page.waitForTimeout(8000);
+    console.log('✍️ Step 4: Entering email...');
+    const emailInput = await page.$('input[type="email"], input[placeholder*="mail"], input#Input_Email');
+    await emailInput.click();
+    await emailInput.type(username, { delay: 100 });
     
-    // Extract from storage if not captured
+    // Check if password field is on same page or need to click next
+    console.log('🔍 Checking for password field...');
+    const passwordExists = await page.$('input[type="password"]');
+    
+    if (!passwordExists) {
+      // Need to click "Next" or "Continue" button
+      console.log('🔘 Clicking Next button...');
+      await page.click('button[type="submit"], button:has-text("Next"), button:has-text("Continue")');
+      await page.waitForTimeout(2000);
+    }
+    
+    // Wait for password field
+    console.log('🔐 Step 5: Entering password...');
+    await page.waitForSelector('input[type="password"]', { timeout: 10000 });
+    const passwordInput = await page.$('input[type="password"]');
+    await passwordInput.click();
+    await passwordInput.type(password, { delay: 100 });
+    
+    // Click final login/submit button
+    console.log('🔘 Step 6: Submitting credentials...');
+    await page.click('button[type="submit"], button:has-text("Log in"), button:has-text("Sign in")');
+    
+    // Wait for successful login and redirect back to Epicor
+    console.log('⏳ Step 7: Waiting for authentication...');
+    try {
+      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 90000 });
+    } catch (e) {
+      console.log('Navigation timeout, checking if we are logged in...');
+    }
+    
+    // Give extra time for tokens to appear
+    console.log('⏳ Waiting for token to appear...');
+    await page.waitForTimeout(10000);
+    
+    // Extract token from storage if not captured from network
     if (!capturedToken) {
-      console.log('🔍 Extracting from storage...');
+      console.log('🔍 Step 8: Extracting token from storage...');
+      
       capturedToken = await page.evaluate(() => {
+        // Helper to extract JWT from any value
+        const findJWT = (value) => {
+          if (!value) return null;
+          
+          // Direct JWT
+          if (typeof value === 'string' && value.startsWith('eyJ')) {
+            return value;
+          }
+          
+          // Try parsing as JSON
+          try {
+            const parsed = JSON.parse(value);
+            if (parsed.access_token) return parsed.access_token;
+            if (parsed.id_token) return parsed.id_token;
+            if (parsed.token) return parsed.token;
+          } catch (e) {
+            // Not JSON
+          }
+          
+          return null;
+        };
+        
+        // Search localStorage
         for (const key of Object.keys(localStorage)) {
           const value = localStorage.getItem(key);
-          if (value && value.includes('eyJ')) {
-            try {
-              const parsed = JSON.parse(value);
-              if (parsed.access_token) return parsed.access_token;
-              if (parsed.id_token) return parsed.id_token;
-            } catch (e) {
-              if (value.startsWith('eyJ')) return value;
-            }
+          const token = findJWT(value);
+          if (token) {
+            console.log('Found token in localStorage:', key);
+            return token;
           }
         }
+        
+        // Search sessionStorage
         for (const key of Object.keys(sessionStorage)) {
           const value = sessionStorage.getItem(key);
-          if (value && value.includes('eyJ')) {
-            try {
-              const parsed = JSON.parse(value);
-              if (parsed.access_token) return parsed.access_token;
-            } catch (e) {
-              if (value.startsWith('eyJ')) return value;
-            }
+          const token = findJWT(value);
+          if (token) {
+            console.log('Found token in sessionStorage:', key);
+            return token;
           }
         }
+        
         return null;
       });
     }
@@ -116,10 +182,10 @@ app.post('/get-token', async (req, res) => {
     await browser.close();
     
     if (!capturedToken) {
-      throw new Error('Token not found. Please verify credentials.');
+      throw new Error('Failed to capture token. Please verify credentials and try again.');
     }
     
-    console.log('✅ Success!');
+    console.log('✅ SUCCESS! Token obtained');
     
     res.json({ 
       success: true, 
@@ -131,15 +197,23 @@ app.post('/get-token', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Error:', error.message);
-    if (browser) await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+    }
+    
     res.status(500).json({ 
       success: false, 
-      error: error.message
+      error: error.message,
+      hint: 'Make sure credentials are correct and Epicor is accessible'
     });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ Token service running on port ${PORT}`);
 });
