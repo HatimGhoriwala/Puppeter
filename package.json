@@ -1,14 +1,14 @@
 {
   "name": "epicor-token-service",
   "version": "1.0.0",
-  "description": "Token extraction service for Epicor",
+  "description": "Token extraction service for Epicor using puppeteer-core",
   "main": "index.js",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "puppeteer": "^21.6.1",
+    "puppeteer-core": "^21.11.0",
     "cors": "^2.8.5"
   },
   "scripts": {
