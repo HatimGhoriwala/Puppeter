@@ -11,7 +11,7 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'running', 
     service: 'Epicor Token Extractor',
-    version: '2.0.0'
+    version: '3.0.0 - Final'
   });
 });
 
@@ -65,84 +65,74 @@ app.post('/get-token', async (req, res) => {
       request.continue();
     });
     
-    console.log('📍 Step 1: Navigating to Epicor...');
+    console.log('📍 Step 1: Navigating to Epicor home page...');
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 90000 });
     
-    // STEP 1: Click the "Log in" button on the first page
+    console.log('Current URL:', page.url());
+    
+    // STEP 1: Click the initial "Log in" button (ep-button with id="loginButton")
     console.log('🔘 Step 2: Clicking initial Log in button...');
-    try {
-      await page.waitForSelector('button:has-text("Log in"), button[type="submit"]', { timeout: 10000 });
-      await page.click('button:has-text("Log in"), button[type="submit"]');
-      console.log('✅ Clicked Log in button, waiting for redirect...');
-      
-      // Wait for navigation to Identity Provider
-      await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
-    } catch (e) {
-      console.log('⚠️ No initial login button found, might already be on IdP page');
-    }
+    await page.waitForSelector('#loginButton', { timeout: 30000 });
+    await page.click('#loginButton');
     
-    // STEP 2: Now we should be on the Identity Provider page
-    console.log('📍 Step 3: Waiting for Identity Provider login form...');
+    // Wait for navigation to Identity Provider
+    console.log('⏳ Waiting for redirect to Identity Provider...');
+    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
     
-    // Wait for email input field (on login.epicor.com)
-    await page.waitForSelector('input[type="email"], input[placeholder*="mail"], input#Input_Email', { 
-      timeout: 30000 
-    });
+    console.log('Current URL after first click:', page.url());
     
-    console.log('✍️ Step 4: Entering email...');
-    const emailInput = await page.$('input[type="email"], input[placeholder*="mail"], input#Input_Email');
-    await emailInput.click();
-    await emailInput.type(username, { delay: 100 });
+    // STEP 2: Enter email on Identity Provider page
+    console.log('✍️ Step 3: Entering email...');
+    await page.waitForSelector('#Input_Email', { timeout: 30000 });
+    await page.type('#Input_Email', username, { delay: 100 });
     
-    // Check if password field is on same page or need to click next
-    console.log('🔍 Checking for password field...');
-    const passwordExists = await page.$('input[type="password"]');
+    // STEP 3: Click the "Log In" button to proceed to password page
+    console.log('🔘 Step 4: Clicking Log In to proceed to password...');
+    await page.waitForSelector('button[type="submit"].btn.btn-primary', { timeout: 10000 });
+    await page.click('button[type="submit"].btn.btn-primary');
     
-    if (!passwordExists) {
-      // Need to click "Next" or "Continue" button
-      console.log('🔘 Clicking Next button...');
-      await page.click('button[type="submit"], button:has-text("Next"), button:has-text("Continue")');
-      await page.waitForTimeout(2000);
-    }
+    // Wait for password page to load
+    console.log('⏳ Waiting for password page...');
+    await page.waitForTimeout(3000);
     
-    // Wait for password field
+    // STEP 4: Enter password
     console.log('🔐 Step 5: Entering password...');
-    await page.waitForSelector('input[type="password"]', { timeout: 10000 });
-    const passwordInput = await page.$('input[type="password"]');
-    await passwordInput.click();
-    await passwordInput.type(password, { delay: 100 });
+    await page.waitForSelector('#Input_Password', { timeout: 30000 });
+    await page.type('#Input_Password', password, { delay: 100 });
     
-    // Click final login/submit button
-    console.log('🔘 Step 6: Submitting credentials...');
-    await page.click('button[type="submit"], button:has-text("Log in"), button:has-text("Sign in")');
+    // STEP 5: Click final "Log In" button
+    console.log('🔘 Step 6: Clicking final Log In button...');
+    await page.waitForSelector('button[type="submit"].btn.btn-primary', { timeout: 10000 });
+    await page.click('button[type="submit"].btn.btn-primary');
     
-    // Wait for successful login and redirect back to Epicor
-    console.log('⏳ Step 7: Waiting for authentication...');
+    // Wait for successful authentication and redirect to home
+    console.log('⏳ Step 7: Waiting for authentication and redirect to home...');
     try {
       await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 90000 });
     } catch (e) {
-      console.log('Navigation timeout, checking if we are logged in...');
+      console.log('Navigation timeout, checking if logged in...');
     }
     
-    // Give extra time for tokens to appear
-    console.log('⏳ Waiting for token to appear...');
+    // Give extra time for tokens to appear in storage
+    console.log('⏳ Waiting for token to be stored...');
     await page.waitForTimeout(10000);
+    
+    console.log('Final URL:', page.url());
     
     // Extract token from storage if not captured from network
     if (!capturedToken) {
       console.log('🔍 Step 8: Extracting token from storage...');
       
       capturedToken = await page.evaluate(() => {
-        // Helper to extract JWT from any value
         const findJWT = (value) => {
           if (!value) return null;
           
-          // Direct JWT
+          // Direct JWT token (starts with eyJ)
           if (typeof value === 'string' && value.startsWith('eyJ')) {
             return value;
           }
           
-          // Try parsing as JSON
+          // Try parsing as JSON object
           try {
             const parsed = JSON.parse(value);
             if (parsed.access_token) return parsed.access_token;
@@ -155,22 +145,22 @@ app.post('/get-token', async (req, res) => {
           return null;
         };
         
-        // Search localStorage
+        // Search all localStorage keys
         for (const key of Object.keys(localStorage)) {
           const value = localStorage.getItem(key);
           const token = findJWT(value);
           if (token) {
-            console.log('Found token in localStorage:', key);
+            console.log('✅ Found token in localStorage key:', key);
             return token;
           }
         }
         
-        // Search sessionStorage
+        // Search all sessionStorage keys
         for (const key of Object.keys(sessionStorage)) {
           const value = sessionStorage.getItem(key);
           const token = findJWT(value);
           if (token) {
-            console.log('Found token in sessionStorage:', key);
+            console.log('✅ Found token in sessionStorage key:', key);
             return token;
           }
         }
@@ -182,10 +172,10 @@ app.post('/get-token', async (req, res) => {
     await browser.close();
     
     if (!capturedToken) {
-      throw new Error('Failed to capture token. Please verify credentials and try again.');
+      throw new Error('Token not found after successful login. Please verify credentials.');
     }
     
-    console.log('✅ SUCCESS! Token obtained');
+    console.log('✅ SUCCESS! Token extracted successfully');
     
     res.json({ 
       success: true, 
@@ -197,6 +187,8 @@ app.post('/get-token', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Error:', error.message);
+    console.error('Stack:', error.stack);
+    
     if (browser) {
       try {
         await browser.close();
@@ -208,12 +200,14 @@ app.post('/get-token', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       error: error.message,
-      hint: 'Make sure credentials are correct and Epicor is accessible'
+      hint: 'Verify credentials and ensure Epicor is accessible'
     });
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`✅ Token service running on port ${PORT}`);
+  console.log(`✅ Epicor Token Service running on port ${PORT}`);
+  console.log(`📍 Health check: http://localhost:${PORT}/`);
+  console.log(`📍 Get token: POST http://localhost:${PORT}/get-token`);
 });
